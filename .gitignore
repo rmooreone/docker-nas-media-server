@@ -1,0 +1,5 @@
+# secrets
+.env
+
+# local runtime state (do not version container configs/state)
+*.log
