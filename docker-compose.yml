@@ -1,0 +1,160 @@
+services:
+  # --- GLUETUN HIGH-SPEED WIREGUARD VPN GATEWAY BRIDGE ---
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN                      # Essential kernel network routing permission
+    ports:
+      # --- Local Web UI Access Port Declarations (localhost-only; use Tailscale to reach remotely) ---
+      - "127.0.0.1:8080:8080"          # qBittorrent Web UI Management
+      - "6881:6881"                    # qBittorrent Inbound P2P Traffic
+      - "6881:6881/udp"                # qBittorrent Inbound P2P Traffic (UDP)
+      - "127.0.0.1:9696:9696"          # Prowlarr Management Interface
+      - "127.0.0.1:8191:8191"          # FlareSolverr Proxy Port - internal use only, never expose to LAN
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - WIREGUARD_ENDPOINT_IP=${VPN_ENDPOINT_IP}
+      - WIREGUARD_ENDPOINT_PORT=${VPN_ENDPOINT_PORT}
+      - WIREGUARD_PUBLIC_KEY=${VPN_PUBLIC_KEY}      #Whitelists your local Wi-Fi devices
+      - WIREGUARD_PRIVATE_KEY=${VPN_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${VPN_INTERFACE_IP}/32
+      - LAN_NETWORK=${LOCAL_SUBNET_RANGE}      # Whitelists your local Wi-Fi devices to ensure Web UI entry
+      - FIREWALL_VPN_INPUT_PORTS=${VPN_FORWARDED_PORT}
+    volumes:
+      - /var/lib/gluetun:/gluetun      # Mounts your custom wireguard.conf directory directly to the boot engine
+    restart: unless-stopped
+
+  # --- TAILSCALE REMOTE SECURE MESH ACCESS ---
+  tailscale:
+    image: tailscale/tailscale:latest
+    container_name: tailscale
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    volumes:
+      - /var/lib/tailscale:/var/lib/tailscale
+      - /dev/net/tun:/dev/net/tun
+    restart: unless-stopped
+
+  # --- JELLYFIN MEDIA ENTERTAINMENT SERVER (Runs on host for easy streaming) ---
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    network_mode: "host"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TIMEZONE}
+    volumes:
+      - /var/lib/jellyfin/config:/config
+      - /var/lib/jellyfin/cache:/cache
+      - /media/pool/samba_shares/public/data/media:/data/media
+    restart: unless-stopped
+
+  # --- SAMBA HIGH-SPEED INTERNAL STORAGE SHARES (Complete Multi-User Layout) ---
+  samba:
+    image: dperson/samba:latest
+    container_name: samba
+    network_mode: "host"
+    environment:
+      - TZ=${TIMEZONE}
+      - USERID=1000
+      - GROUPID=1000
+    volumes:
+      - /media/pool/samba_shares:/mount
+    command: >
+      -u "chief;${CHIEF_PASSWORD}"
+      -u "family;${FAMILY_PASSWORD}"
+      -s "Public_Data;/mount/public/data;1;0;0;chief"
+      -s "Public_Photos;/mount/public/photos;1;0;0;chief,family"
+      -s "Public_Music;/mount/public/music;1;0;0;chief,family"
+      -s "Public_Documents;/mount/public/documents;1;0;0;chief,family"
+      -s "Family_Vault;/mount/family_vault;1;0;0;family"
+      -s "Chief_Private;/mount/personal/chief;1;0;0;chief"
+      -g "aio read size = 1"
+      -g "use sendfile = yes"
+      -g "ea support = no"
+      -p
+    restart: unless-stopped
+
+  # --- JELLYSEERR VISUAL HOMEPAGE REQUEST CATALOG (Runs on open host network) ---
+  seerr:
+    image: fallenbagel/jellyseerr:latest
+    container_name: seerr
+    network_mode: "host"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TIMEZONE}
+    volumes:
+      - /var/lib/seerr/config:/app/config
+    restart: unless-stopped
+
+  # --- QB_TORRENT DOWNLOAD ENGINE (Locked securely inside Gluetun VPN) ---
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    network_mode: "container:gluetun"  # Hard-locks network routing to go strictly through Gluetun
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TIMEZONE}
+      - WEBUI_PORT=8080
+    volumes:
+      - /var/lib/qbittorrent/config:/config
+      - /media/pool/samba_shares/public/data:/data # TRaSH Guides Golden atomic directory
+    restart: unless-stopped
+
+  # --- FLARESOLVERR CLOUDFLARE BYPASS PROXY (Locked inside Gluetun VPN) ---
+  flaresolverr:
+    image: flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    network_mode: "container:gluetun"
+    environment:
+      - LOG_LEVEL=info
+      - TZ=${TIMEZONE}
+    restart: unless-stopped
+
+  # --- PROWLARR MASTER INDEX CENTRAL STATION (Locked inside Gluetun VPN) ---
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    network_mode: "container:gluetun"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TIMEZONE}
+    volumes:
+      - /var/lib/prowlarr/config:/config
+    restart: unless-stopped
+
+  # --- RADARR MOVIE AUTOMATION HARVESTER (Runs on open host for easy file linking) ---
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    network_mode: "host"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TIMEZONE}
+    volumes:
+      - /var/lib/radarr/config:/config
+      - /media/pool/samba_shares/public/data:/data
+    restart: unless-stopped
+
+  # --- SONARR TELEVISION SHOW AUTOMATION HARVESTER (Runs on open host for easy file linking) ---
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    network_mode: "host"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=${TIMEZONE}
+    volumes:
+      - /var/lib/sonarr/config:/config
+      - /media/pool/samba_shares/public/data:/data
+    restart: unless-stopped
